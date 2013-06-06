@@ -5,9 +5,12 @@ var util = require('util');
 var Stream = require('stream').Stream;
 var ChunkEmitter = require('./chunkemitter');
 var indexOfLF = require('./utils').indexOfLF;
+var ThinMimeTree = require("./thinmimetree");
 
-var STATE_HEADERS = 1;
-var STATE_BODY = 2;
+// stream states
+var STATE_HEADERS     = 1;
+var STATE_BODY        = 2;
+var STATE_MIME_HEADER = 3;
 
 function MessageStream (config, id, headers) {
     if (!id) throw new Error('id required');
@@ -46,6 +49,8 @@ function MessageStream (config, id, headers) {
     this.ws = null;
     this.rs = null;
     this.in_pipe = false;
+    this.tmt = new ThinMimeTree();
+    this.mime_headers = "";
 }
 
 util.inherits(MessageStream, Stream);
@@ -71,7 +76,10 @@ MessageStream.prototype.add_line = function (line) {
     if (this.state === STATE_HEADERS) {
         // Look for end of headers line
         if (line.length === 2 && line[0] === 0x0d && line[1] === 0x0a) {
-            this.idx['headers'] = { start: 0, end: this.bytes_read-line.length };
+            this.idx['headers'] = {
+              start : 0,
+              end   : this.bytes_read-line.length
+            };
             this.state = STATE_BODY;
             this.idx['body'] = { start: this.bytes_read };
         }
@@ -82,21 +90,28 @@ MessageStream.prototype.add_line = function (line) {
         if (line.length > 4 && line[0] === 0x2d && line[1] == 0x2d) {
             var boundary = line.slice(2).toString().replace(/\s*$/,'');
             if (/--\s*$/.test(line)) {
-                // End of boundary?
+                // end of boundary marker
                 boundary = boundary.slice(0, -2);
-                if (this.idx[boundary]) {
-                    this.idx[boundary]['end'] = this.bytes_read;
-                }
+                this.tmt.end_boundary(boundary, this.bytes_read - line.length);
             }
             else {
-                // Start of boundary?
-                if (!this.idx[boundary]) {
-                    this.idx[boundary] = { start: this.bytes_read-line.length };
-                }
+                // boundary marker
+                this.tmt.add_boundary(boundary, this.bytes_read - line.length);
+                this.state = STATE_MIME_HEADER;
             }
         }
     }
- 
+    else if (this.state === STATE_MIME_HEADER) {
+        if (line.length === 2 && line[0] === 0x0d && line[1] === 0x0a) {
+            this.tmt.add_headers(this.mime_headers);
+            this.mime_headers = "";
+            this.state = STATE_BODY;
+        }
+        else {
+            this.mime_headers += line;
+        }
+    }
+
     this.write_ce.fill(line);
 }
 
@@ -263,7 +278,14 @@ MessageStream.prototype._read = function () {
 
 MessageStream.prototype.process_buf = function (buf) {
     var offset = 0;
-    while ((offset = indexOfLF(buf)) !== -1) { 
+
+    // banner support
+    if (this.add_banner) {
+console.log(require('util').inspect(this.tmt, true, 10));
+// console.log("BANNER: " + line);
+    }
+
+    while ((offset = indexOfLF(buf)) !== -1) {
         var line = buf.slice(0, offset+1);
         buf = buf.slice(line.length);
         // Don't output headers if they where sent already
@@ -324,6 +346,7 @@ MessageStream.prototype.pipe = function (destination, options) {
     }
     Stream.prototype.pipe.call(this, destination, options);
     // Options
+    this.add_banner   = ((options && options.add_banner) ? options.add_banner : false);
     this.line_endings = ((options && options.line_endings) ? options.line_endings : "\r\n");
     this.dot_stuffing = ((options && options.dot_stuffing) ? options.dot_stuffing : false);
     this.ending_dot   = ((options && options.ending_dot) ? options.ending_dot : false);
