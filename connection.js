@@ -1216,6 +1216,7 @@ Connection.prototype.accumulate_data = function(line) {
         line[1] === 0x0d &&
         line[2] === 0x0a)
     {
+        this.transaction.flush_lines();
         this.transaction.message_stream.add_line_end(function () {
             self.data_done();
         });

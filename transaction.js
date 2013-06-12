@@ -44,11 +44,13 @@ exports.createTransaction = function(uuid) {
 };
 
 Transaction.prototype.add_data = function(line) {
-    if (!this.discard_data) this.message_stream.add_line(line);
+    if (!this.discard_data && this.header_pos === 0) {
+      this.message_stream.add_line(line);
+    }
     if (typeof line !== 'string') {
         line = line.toString('binary');
     }
-    line = line.replace(/^\./, '').replace(/\r\n$/, '\n');
+    line = line.replace(/^\./, '\n').replace(/\r\n$/, '\n');
     // check if this is the end of headers line  
     if (this.header_pos === 0 && line[0] === '\n') {
         this.header.parse(this.header_lines);
@@ -64,6 +66,7 @@ Transaction.prototype.add_data = function(line) {
         }
     }
     else if (this.header_pos && this.parse_body) {
+        // This could mutate line
         this.body.parse_more(line);
     }
 };
@@ -91,10 +94,20 @@ Transaction.prototype.end_data = function() {
             }
         }
     }
-    if (this.header_pos && this.parse_body) {
-        var data = this.body.parse_end();
+//     if (this.header_pos && this.parse_body) {
+//         var data = this.body.parse_end();
+//     }
+};
+
+Transaction.prototype.flush_lines = function() {
+    var data = this.body.parse_end();
+    var lines = data.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+        if (!this.discard_data) {
+          this.message_stream.add_line(lines[i] + '\r\n');
+        }
     }
-}
+};
 
 Transaction.prototype.add_header = function(key, value) {
     this.header.add_end(key, value);
@@ -123,7 +136,6 @@ Transaction.prototype.attachment_hooks = function (start, data, end) {
 };
 
 Transaction.prototype.set_banner = function (text, html) {
-    throw "transaction.set_banner is currently non-functional";
     this.parse_body = true;
     if (!html) {
         html = text.replace(/\n/g, '<br/>\n');
