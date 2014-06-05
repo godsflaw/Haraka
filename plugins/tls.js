@@ -4,7 +4,7 @@
 var utils = require('./utils');
 
 // To create a key:
-// openssl req -x509 -nodes -days 2190 -newkey rsa:1024 \
+// openssl req -x509 -nodes -days 2190 -newkey rsa:4096 \
 //         -keyout config/tls_key.pem -out config/tls_cert.pem
 
 exports.hook_capabilities = function (next, connection) {
@@ -26,9 +26,18 @@ exports.hook_capabilities = function (next, connection) {
 exports.hook_unrecognized_command = function (next, connection, params) {
     /* Watch for STARTTLS directive from client. */
     if (connection.notes.tls_enabled && params[0] === 'STARTTLS') {
-        var key = this.config.get('tls_key.pem', 'binary');
+        var key  = this.config.get('tls_key.pem', 'binary');
         var cert = this.config.get('tls_cert.pem', 'binary');
-        var options = { key: key, cert: cert, requestCert: true };
+        var ini  = this.config.get('tls.ini');
+
+        ini.options = ini.options || {};
+        var ciphers = ini.options['ciphers'] || 'ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA256:DHE-RSA-AES128-SHA256:DHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA:ECDHE-RSA-DES-CBC3-SHA:EDH-RSA-DES-CBC3-SHA:AES256-GCM-SHA384:AES128-GCM-SHA256:AES256-SHA256:AES128-SHA256:AES256-SHA:AES128-SHA:DES-CBC3-SHA:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!MD5:!PSK:!RC4';
+
+        var options = {
+            key:     key,
+            cert:    cert,
+            ciphers: ciphers
+        };
 
         /* Respond to STARTTLS command. */
         connection.respond(220, "Go ahead.");
