@@ -124,7 +124,7 @@ Transaction.prototype.attachment_hooks = function (start, data, end) {
 };
 
 Transaction.prototype.set_banner = function (text, html) {
-    throw "transaction.set_banner is currently non-functional";
+    // throw "transaction.set_banner is currently non-functional";
     this.parse_body = true;
     if (!html) {
         html = text.replace(/\n/g, '<br/>\n');
