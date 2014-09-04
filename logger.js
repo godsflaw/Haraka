@@ -1,4 +1,5 @@
 "use strict";
+/* jshint node: true */
 // Log class
 
 var config    = require('./config');
@@ -7,6 +8,7 @@ var connection;
 var outbound;
 var constants = require('./constants');
 var util      = require('util');
+var tty       = require('tty');
 
 var logger = exports;
 
@@ -21,19 +23,51 @@ logger.LOGCRIT      = 2;
 logger.LOGALERT     = 1;
 logger.LOGEMERG     = 0;
 
+logger.loglevel     = logger.LOGWARN;
+logger.deferred_logs = [];
+
+logger.colors = { // Makes me cringe spelling it this way...
+    "DATA" : "green",
+    "PROTOCOL" : "green",
+    "DEBUG" : "grey",
+    "INFO" : "cyan",
+    "NOTICE" : "blue",
+    "WARN" : "red",
+    "ERROR" : "red",
+    "CRIT" : "red",
+    "ALERT" : "red",
+    "EMERG" : "red",
+};
+
+var stdout_is_tty = tty.isatty(process.stdout.fd);
+
+logger.colorize = function (color, str) {
+    if (!util.inspect.colors) { return str; }  // node util before Nov 2013
+    if (!util.inspect.colors[color]) { return str; }  // unknown color
+    return '\u001b[' + util.inspect.colors[color][0] + 'm' + str +
+           '\u001b[' + util.inspect.colors[color][1] + 'm';
+};
+
 var loglevel = logger.LOGWARN;
 
 var deferred_logs = [];
 
 logger.dump_logs = function (exit) {
-    while (deferred_logs.length > 0) {
-        var log_item = deferred_logs.shift();
-        console.log(log_item.data);
+    while (logger.deferred_logs.length > 0) {
+        var log_item = logger.deferred_logs.shift();
+        var color = logger.colors[log_item.level];
+        if (color && stdout_is_tty) {
+            console.log(logger.colorize(color,log_item.data));
+        }
+        else {
+            console.log(log_item.data);
+        }
     }
     if (exit) {
         process.exit(1);
     }
-}
+    return true;
+};
 
 logger.log = function (level, data) {
     if (level === 'PROTOCOL') {
@@ -41,30 +75,37 @@ logger.log = function (level, data) {
     }
     data = data.replace(/\r/g, '\\r')
                .replace(/\n$/, '');
-    // todo - just buffer these up (defer) until plugins are loaded
-    if (plugins && plugins.plugin_list) {
-        while (deferred_logs.length > 0) {
-            var log_item = deferred_logs.shift();
-            plugins.run_hooks('log', logger, log_item);
-        }
-        plugins.run_hooks('log', logger, {
-            'level' : level,
-            'data'  : data
-        });
+
+    var item = { 'level' : level, 'data'  : data };
+
+    // buffer until plugins are loaded
+    if (!plugins || !plugins.plugin_list) {
+        logger.deferred_logs.push( item );
+        return true;
     }
-    else {
-        deferred_logs.push({
-            'level' : level,
-            'data'  : data
-        });
+
+    // process buffered logs
+    while (logger.deferred_logs.length > 0) {
+        var log_item = logger.deferred_logs.shift();
+        plugins.run_hooks('log', logger, log_item);
     }
-}
+
+    plugins.run_hooks('log', logger, item );
+    return true;
+};
 
 logger.log_respond = function (retval, msg, data) {
     // any other return code is irrelevant
-    if (retval === constants.cont) {
-        return console.log(data.data);
+    if (retval !== constants.cont) { return false; }
+
+    var color = logger.colors[data.level];
+    if (color && stdout_is_tty) {
+        console.log(logger.colorize(color,data.data));
+        return true;
     }
+
+    console.log(data.data);
+    return true;
 };
 
 logger._init_loglevel = function () {
@@ -74,76 +115,91 @@ logger._init_loglevel = function () {
     });
     if (_loglevel) {
         var loglevel_num = parseInt(_loglevel);
-        if (!loglevel_num || loglevel_num === NaN) {
-            this.log('info', 'loglevel: ' + _loglevel.toUpperCase());
-            loglevel = logger[_loglevel.toUpperCase()];
+        if (!loglevel_num || isNaN(loglevel_num)) {
+            this.log('INFO', 'loglevel: ' + _loglevel.toUpperCase());
+            logger.loglevel = logger[_loglevel.toUpperCase()];
         }
         else {
-            loglevel = loglevel_num;
+            logger.loglevel = loglevel_num;
         }
-        if (!loglevel) {
-            loglevel = logger.LOGWARN;
+        if (!logger.loglevel) {
+            logger.loglevel = logger.LOGWARN;
         }
     }
 };
 
 logger.would_log = function (level) {
-    if (loglevel < level) return false;
+    if (logger.loglevel < level) { return false; }
     return true;
-}
+};
+
+var original_console_log = console.log;
+
+logger._init_timestamps = function () {
+    var self = this;
+    var _timestamps = config.get('log_timestamps', 'value', function () {
+        self._init_timestamps();
+    });
+    if (_timestamps) {
+        console.log = original_console_log.bind(console, new Date().toISOString());
+    }
+    else {
+        console.log = original_console_log;
+    }
+};
 
 logger._init_loglevel();
+logger._init_timestamps();
 
 var level, key;
 for (key in logger) {
-    if(logger.hasOwnProperty(key)) {
-        if (key.match(/^LOG\w/)) {
-            level = key.slice(3);
-            logger[key.toLowerCase()] = (function(level, key) {
-                return function() {
-                    if (loglevel < logger[key])
-                        return;
-                    var levelstr = "[" + level + "]";
-                    var str = "";
-                    var uuidstr = "[-]";
-                    var pluginstr = "[core]";
-                    for (var i = 0; i < arguments.length; i++) {
-                        var data = arguments[i];
-                        if (typeof(data) === 'object') {
-                            // if the object is a connection, we wish to add
-                            // the connection id
-                            if (data instanceof connection.Connection) {
-                                uuidstr = "[" + data.uuid;
-                                if (data.tran_count > 0) {
-                                  uuidstr += "." + data.tran_count;
-                                }
-                                uuidstr += "]";
+    if(!logger.hasOwnProperty(key)) { continue; }
+
+    if (key.match(/^LOG\w/)) {
+        level = key.slice(3);
+        logger[key.toLowerCase()] = (function(level, key) {
+            return function() {
+                if (logger.loglevel < logger[key]) { return; }
+                var levelstr = "[" + level + "]";
+                var str = "";
+                var uuidstr = "[-]";
+                var pluginstr = "[core]";
+                for (var i = 0; i < arguments.length; i++) {
+                    var data = arguments[i];
+                    if (typeof(data) === 'object') {
+                        // if the object is a connection, we wish to add
+                        // the connection id
+                        if (data instanceof connection.Connection) {
+                            uuidstr = "[" + data.uuid;
+                            if (data.tran_count > 0) {
+                                uuidstr += "." + data.tran_count;
                             }
-                            else if (data instanceof plugins.Plugin) {
-                                pluginstr = "[" + data.name + "]"; 
-                            }
-                            else if (data instanceof outbound.HMailItem) {
-                                pluginstr = "[outbound]";
-                                if (data.todo && data.todo.uuid) {
-                                    uuidstr = "[" + data.todo.uuid + "]";
-                                }
-                            }
-                            else {
-                                str += util.inspect(data);
+                            uuidstr += "]";
+                        }
+                        else if (data instanceof plugins.Plugin) {
+                            pluginstr = "[" + data.name + "]";
+                        }
+                        else if (data instanceof outbound.HMailItem) {
+                            pluginstr = "[outbound]";
+                            if (data.todo && data.todo.uuid) {
+                                uuidstr = "[" + data.todo.uuid + "]";
                             }
                         }
                         else {
-                            str += data;
+                            str += util.inspect(data);
                         }
                     }
-                    logger.log(level, [levelstr, uuidstr, pluginstr, str].join(" "));
+                    else {
+                        str += data;
+                    }
                 }
-            })(level, key);
-        }
+                logger.log(level, [levelstr, uuidstr, pluginstr, str].join(" "));
+            };
+        })(level, key);
     }
 }
 
 // load these down here so it sees all the logger methods compiled above
 plugins = require('./plugins');
 connection = require('./connection');
-outbound = require('./outbound'); 
+outbound = require('./outbound');

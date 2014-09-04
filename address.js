@@ -11,6 +11,13 @@
 var qchar = /([^a-zA-Z0-9!#\$\%\&\x27\*\+\x2D\/=\?\^_`{\|}~.])/;
 
 function Address (user, host) {
+    if (typeof user == 'object' && user.original) {
+        // Assume reconstructing from JSON parse
+        for (var k in user) {
+            this[k] = user[k];
+        }
+        return this;
+    }
     var match = /^<(.*)>$/.exec(user);
     if (match) {
         this.original = user;
@@ -85,7 +92,7 @@ Address.prototype.parse = function (addr) {
     var matches;
     
     if (!(matches = user_host_re.exec(addr))) {
-        throw new Error("Failed to parse address: " + addr);
+        throw new Error("Invalid domain in address: " + addr);
     }
     
     var localpart  = matches[1];
@@ -107,7 +114,7 @@ Address.prototype.parse = function (addr) {
         return;
     }
     else {
-        throw new Error("Failed to parse address: " + addr);
+        throw new Error("Invalid local part in address: " + addr);
     }
 }
 

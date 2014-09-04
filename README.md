@@ -1,5 +1,8 @@
+
 Haraka - a Node.js Mail Server
 ------------------------------
+
+[![Build Status](https://travis-ci.org/baudehlo/Haraka.svg?branch=master)](https://travis-ci.org/baudehlo/Haraka) [![Coverage Status](https://coveralls.io/repos/baudehlo/Haraka/badge.png)](https://coveralls.io/r/baudehlo/Haraka)
 
 Haraka is an SMTP server which uses a plugin architecture to implement most
 of its functionality. It uses a highly scalable event model to be able to
@@ -49,7 +52,7 @@ code in Haraka, or maybe someone has already written this plugin.
 
 Plugins are already provided for running mail through SpamAssassin, checking
 for known bad HELO patterns, checking DNS Blocklists, and watching for
-violators of the SMTP protocol via the "early_talker" plugin.
+violators of the SMTP protocol via the "early\_talker" plugin.
 
 Furthermore Haraka comes with a simple plugin called "graph" which shows you
 real-time charts of which plugins rejected the most mail, allowing you to
@@ -81,7 +84,7 @@ mail for. If not, edit the `config/host_list` file. For example if you want
 to receive mail addressed to `user@domain.com`, add `domain.com` to the
 `config/host_list` file.
 
-Finally just start Haraka:
+Finally just start Haraka using root access permissions:
 
     $ haraka -c /path/to/haraka_test
 
@@ -90,9 +93,8 @@ And it will run.
 However the big thing you want to do next is to edit the `config/plugins`
 file. This determines what plugins run in Haraka, and controls the overall
 behaviour of the server. By default the server is setup to receive mails for
-domains in `host_list` and deliver them via `qmail-queue`. Queueing to
-qmail is likely not what you need unless you have qmail installed, so this is
-likely the first thing you want to change.
+domains in `host_list` and deliver them via `smtp-forward`. Configure the
+destination in `config/smtp_forward.ini`.
 
 Each plugin has documentation available via `haraka -h plugins/<name>`.
 Look there for information about how each plugin is configured, edit your
@@ -138,3 +140,4 @@ Javascript).
 
 [1]: http://nodejs.org/
 [2]: http://youtu.be/6twKXMAsPsw
+

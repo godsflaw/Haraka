@@ -57,12 +57,23 @@ Server.daemonize = function (config_data) {
         // We are the daemon from here on...
         var npid = require('npid');
         try {
-            npid.create(config_data.main.daemon_pid_file);
+            npid.create(config_data.main.daemon_pid_file).removeOnExit();
         }
         catch (err) {
             logger.logerror(err.message);
             process.exit(1);
         }
+    }
+}
+
+Server.flushQueue = function () {
+    if (Server.cluster) {
+        for (var id in cluster.workers) {
+            cluster.workers[id].send({event: 'outbound.flush_queue'});
+        }
+    }
+    else {
+        out.flush_queue();
     }
 }
 
@@ -103,32 +114,43 @@ Server.createServer = function (params) {
     if (cluster && config_data.main.nodes) {
         Server.cluster = cluster; 
         if (cluster.isMaster) {
-            this.daemonize(config_data);
-            // Fork workers
-            var workers = (config_data.main.nodes === 'cpus') ? 
-                os.cpus().length : config_data.main.nodes;
-            for (var i=0; i<workers; i++) {
-                cluster.fork({ CLUSTER_MASTER_PID: process.pid });
-            }
-            cluster.on('online', function (worker) {
-                logger.lognotice('worker ' + worker.id + ' started pid=' + worker.process.pid);
-            });
-            cluster.on('listening', function (worker, address) {
-                logger.lognotice('worker ' + worker.id + ' listening on ' + address.address + ':' + address.port);
-            });
-            cluster.on('exit', function (worker, code, signal) {
-                if (signal) {
-                    logger.lognotice('worker ' + worker.id + ' killed by signal ' + signal);
+            out.scan_queue_pids(function (err, pids) {
+                if (err) {
+                    Server.logcrit("Scanning queue failed. Shutting down.");
+                    process.exit(1);
                 }
-                else if (code !== 0) {
-                    logger.lognotice('worker ' + worker.id + ' exited with error code: ' + code);
+                Server.daemonize(config_data);
+                // Fork workers
+                var workers = (config_data.main.nodes === 'cpus') ? 
+                    os.cpus().length : config_data.main.nodes;
+                var new_workers = [];
+                for (var i=0; i<workers; i++) {
+                    new_workers.push(cluster.fork({ CLUSTER_MASTER_PID: process.pid }));
                 }
-                if (signal || code !== 0) {
-                    // Restart worker
-                    cluster.fork({ CLUSTER_MASTER_PID: process.pid });
+                for (var i=0; i<pids.length; i++) {
+                    new_workers[i % new_workers.length].send({event: 'outbound.load_pid_queue', data: pids[i]});
                 }
+                cluster.on('online', function (worker) {
+                    logger.lognotice('worker ' + worker.id + ' started pid=' + worker.process.pid);
+                });
+                cluster.on('listening', function (worker, address) {
+                    logger.lognotice('worker ' + worker.id + ' listening on ' + address.address + ':' + address.port);
+                });
+                cluster.on('exit', function (worker, code, signal) {
+                    if (signal) {
+                        logger.lognotice('worker ' + worker.id + ' killed by signal ' + signal);
+                    }
+                    else if (code !== 0) {
+                        logger.lognotice('worker ' + worker.id + ' exited with error code: ' + code);
+                    }
+                    if (signal || code !== 0) {
+                        // Restart worker
+                        var new_worker = cluster.fork({ CLUSTER_MASTER_PID: process.pid });
+                        new_worker.send({event: 'outbound.load_pid_queue', data: worker.process.pid});
+                    }
+                });
+                plugins.run_hooks('init_master', Server);
             });
-            plugins.run_hooks('init_master', Server);
         }
         else {
             // Workers
@@ -148,10 +170,30 @@ function setup_listeners (listeners, plugins, type, inactivity_timeout) {
             return cb(new Error("Invalid format for listen parameter in smtp.ini"));
         }
         
-        var server = net.createServer(function (client) {
+        var conn_cb = function (client) {
             client.setTimeout(inactivity_timeout);
             conn.createConnection(client, server);
-        });
+        };
+
+        var server;
+        if (hp[2] == 465) {
+            var options = {
+                key: config.get('tls_key.pem', 'binary'),
+                cert: config.get('tls_cert.pem', 'binary'),
+            };
+            if (!options.key) {
+                return cb(new Error("Missing tls_key.pem for port 465"));
+            }
+            if (!options.cert) {
+                return cb(new Error("Missing tls_cert.pem for port 465"));
+            }
+            logger.lognotice("Creating TLS server on " + host_port);
+            server = require('tls').createServer(options, conn_cb);
+            server.has_tls=true;
+        }
+        else {
+            server = net.createServer(conn_cb);
+        }
 
         server.notes = Server.notes;
         if (Server.cluster) server.cluster = Server.cluster;
@@ -182,7 +224,7 @@ function setup_listeners (listeners, plugins, type, inactivity_timeout) {
         }
         listening();
         plugins.run_hooks('init_' + type, Server);
-    })
+    });
 }
 
 Server.init_master_respond = function (retval, msg) {
@@ -190,7 +232,10 @@ Server.init_master_respond = function (retval, msg) {
     switch(retval) {
         case constants.ok:
         case constants.cont:
-                out.load_queue();
+                // Load the queue if we're just one process
+                if (!(cluster && config.get('smtp.ini').main.nodes)) {
+                    out.load_queue();
+                }
                 break;
         default:
                 Server.logerror("init_master returned error" + ((msg) ? ': ' + msg : ''));

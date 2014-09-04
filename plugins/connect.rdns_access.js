@@ -20,6 +20,8 @@ exports.register = function() {
         this.blregex = new RegExp('^(?:' + black_regex.join('|') + ')$', 'i');
     }
 
+    this.logerror(this, "plugin deprecated. see 'haraka -h access' for upgrade instructions");
+
     this.register_hook('connect', 'rdns_access');
 }
 
@@ -33,6 +35,7 @@ exports.rdns_access = function(next, connection) {
 
         if (_in_whitelist(connection, plugin, connection.remote_ip)) {
             connection.logdebug(plugin, "Allowing " + connection.remote_ip);
+            connection.notes.rdns_access = 'white';
             return next();
         }
     }
@@ -44,6 +47,7 @@ exports.rdns_access = function(next, connection) {
 
         if (_in_whitelist(connection, plugin, connection.remote_host.toLowerCase())) {
             connection.logdebug(plugin, "Allowing " + connection.remote_host);
+            connection.notes.rdns_access = 'white';
             return next();
         }
     }
@@ -56,6 +60,7 @@ exports.rdns_access = function(next, connection) {
         if (_in_blacklist(connection, plugin, connection.remote_ip)) {
             connection.logdebug(plugin, "Rejecting, matched: " +
                 connection.remote_ip);
+            connection.notes.rdns_access = 'black';
             return next(DENYDISCONNECT, connection.remote_host.toLowerCase() +
                 ' [' + connection.remote_ip + '] ' + plugin.deny_msg);
         }
@@ -69,6 +74,7 @@ exports.rdns_access = function(next, connection) {
         if (_in_blacklist(connection, plugin, connection.remote_host.toLowerCase())) {
             connection.logdebug(plugin, "Rejecting, matched: " +
                connection.remote_host);
+            connection.notes.rdns_access = 'black';
             return next(DENYDISCONNECT, connection.remote_host.toLowerCase() +
                 ' [' + connection.remote_ip + '] ' + plugin.deny_msg);
         }

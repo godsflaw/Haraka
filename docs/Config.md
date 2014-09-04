@@ -7,29 +7,29 @@ of configuration files.
 The API is fairly simple:
 
     // From within a plugin:
-    var config_item = this.config.get(name, [type='value'], [callback]);
+    var config_item = this.config.get(name, [type], [callback], [options]);
 
-Where type can be one of:
+Type can be one of:
 
 * 'value' - load a flat file containing a single value (default)
 * 'ini' - load an "ini" style file
 * 'json' - load a json file
 * 'list' - load a flat file containing a list of values
-* 'data' - load a flat file containing a list of values, keeping comments and
-whitespace.
+* 'data' - load a flat file containing a list of values, keeping comments and whitespace.
 
 The name is not a filename, but a name in the config/ directory. For example:
 
     var config_item = this.config.get('rambling.paths', 'list');
 
-This will look up and load the file config/rambling.paths in the Haraka
-directory.
+This will load the file config/rambling.paths in the Haraka directory.
 
-However if you name your ini and json files ending in `.ini` and `.json`
-respectively then the `type` parameter can be left off.
+If your ini and json files have `.ini` and `.json` suffixes,
+the `type` parameter can be omitted.
 
-You can optionally pass in a callback function which will be called whenever
+You can optionally pass in a callback function which will be called when
 an update is detected on the file.
+
+For ini files, an `options` object is allowed.
 
 File Formats
 ============
@@ -66,8 +66,35 @@ That produces the following Javascript object:
 The key point there is that items before any [section] marker go in the "main"
 section.
 
+Note that there is some auto-conversion of values on the right hand side of
+the equals: integers are converted to integers, floats are converted to
+floats.
+
 The key=value pairs also support continuation lines using the
 backslash "\" character.
+
+The `options` object allows you to specify which keys are boolean:
+
+    { booleans: ['reject','some_true_value'] }
+
+The key names should be in the format section.key, if the key name does not
+specify a section name then it will be presumed to be 'main'.
+
+This ensures these values are converted to true Javascript booleans when parsed,
+and supports the following options for boolean values:
+
+    true, yes, ok, enabled, on, 1
+
+Anything else is treated as false.
+
+If you wish to default the boolean to true (e.g. when the key is undefined or
+the config file is missing) then prefix the key with +:
+
+    { booleans: [ '+reject' ] }
+
+For completeness the inverse is also allowed:
+
+    { booleans: [ '-reject' ] }
 
 Flat Files
 ----------
@@ -112,7 +139,7 @@ var configfile = require('./configfile');
 var cfg = configfile.read_config('/path/to/file', type);
 ```
 
-read_config() handles the caching for you and will return cached values
+`read_config()` handles the caching for you and will return cached values
 if there have been no updates since the file was read.
 
 You can also optionally pass in a callback that is run if the file is 

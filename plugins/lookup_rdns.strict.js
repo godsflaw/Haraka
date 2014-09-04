@@ -1,5 +1,16 @@
 // check rdns against forward
 
+// NOTICE: the functionality of this plugin is duplicated by the
+//         FCrDNS plugin. Consider using it instead. This plugin
+//         may be deprecated in the future.
+//
+//         To achieve the same results using FCrDNS (in addition to
+//         the additional features), set [reject] no_rdns=true in
+//         connect.fcrdns.ini. 
+//
+//         The FCrDNS plugin uses the white/blacklist functionality in the
+//         connect.rdns_access plugin.
+
 var dns = require('dns');
 
 // _dns_error handles err from node.dns callbacks.  It will always call next()
@@ -71,18 +82,18 @@ exports.hook_lookup_rdns = function (next, connection) {
     var timeout      = config.general && (config.general['timeout']     || 60);
     var timeout_msg  = config.general && (config.general['timeout_msg'] || '');
 
+    if (_in_whitelist(connection, plugin, connection.remote_ip)) {
+        called_next++;
+        return next(OK, connection.remote_ip);
+    }
+
     timeout_id = setTimeout(function () {
         if (!called_next) {
             connection.loginfo(plugin, 'timed out when looking up ' +
                 connection.remote_ip + '. Disconnecting.');
             called_next++;
-
-            if (_in_whitelist(connection, plugin, connection.remote_ip)) {
-                next(OK, connection.remote_ip);
-            } else {
-                next(DENYDISCONNECT, '[' + connection.remote_ip + '] ' +
-                    timeout_msg);
-            }
+            next(DENYDISCONNECT, '[' + connection.remote_ip + '] ' +
+                timeout_msg);
         }
     }, timeout * 1000);
 
@@ -91,13 +102,9 @@ exports.hook_lookup_rdns = function (next, connection) {
             if (!called_next) {
                 called_next++;
                 clearTimeout(timeout_id);
-
-                if (_in_whitelist(connection, plugin, connection.remote_ip)) {
-                    next(OK, connection.remote_ip);
-                } else {
-                    _dns_error(connection, next, err, connection.remote_ip, plugin,
-                        rev_nxdomain, rev_dnserror);
-                }
+                connection.auth_results("iprev=permerror");
+                _dns_error(connection, next, err, connection.remote_ip, plugin,
+                    rev_nxdomain, rev_dnserror);
             }
         } else {
             // Anything this strange needs documentation.  Since we are
@@ -106,6 +113,15 @@ exports.hook_lookup_rdns = function (next, connection) {
             // we know to send an error of nothing has been found.  Also,
             // on err, this helps us figure out if we still have more to check.
             total_checks = domains.length;
+
+            // Check whitelist before we start doing a bunch more DNS queries.
+            for(var i = 0; i < domains.length; i++) {
+                if (_in_whitelist(connection, plugin, domains[i])) {
+                    called_next++;
+                    clearTimeout(timeout_id);
+                    return next(OK, domains[i]);
+                }
+            }
 
             // Now we should make sure that the reverse response matches
             // the forward address.  Almost no one will have more than one
@@ -120,13 +136,9 @@ exports.hook_lookup_rdns = function (next, connection) {
                         if (!called_next && !total_checks) {
                             called_next++;
                             clearTimeout(timeout_id);
-
-                            if (_in_whitelist(connection, plugin, rdns)) {
-                                next(OK, rdns);
-                            } else {
-                                _dns_error(connection, next, err, rdns, plugin,
-                                    fwd_nxdomain, fwd_dnserror);
-                            }
+                            connection.auth_results("iprev=fail");
+                            _dns_error(connection, next, err, rdns, plugin,
+                                fwd_nxdomain, fwd_dnserror);
                         }
                     } else {
                         for (var i = 0; i < addresses.length ; i++) {
@@ -135,6 +147,7 @@ exports.hook_lookup_rdns = function (next, connection) {
                                 if (!called_next) {
                                     called_next++;
                                     clearTimeout(timeout_id);
+                                    connection.auth_results("iprev=pass");
                                     return next(OK, rdns);
                                 }
                             }
@@ -143,13 +156,8 @@ exports.hook_lookup_rdns = function (next, connection) {
                         if (!called_next && !total_checks) {
                             called_next++;
                             clearTimeout(timeout_id);
-
-                            if (_in_whitelist(connection, plugin, rdns)) {
-                                next(OK, rdns);
-                            } else {
-                                next(DENYDISCONNECT, rdns + ' [' +
-                                    connection.remote_ip + '] ' + nomatch);
-                            }
+                            next(DENYDISCONNECT, rdns + ' [' +
+                                connection.remote_ip + '] ' + nomatch);
                         }
                     }
                 });

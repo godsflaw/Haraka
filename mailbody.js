@@ -3,12 +3,13 @@
 var logger = require('./logger');
 var Header = require('./mailheader').Header;
 var utils  = require('./utils');
+var config = require('./config');
 var events = require('events');
 var util   = require('util');
 var Iconv  = require('./mailheader').Iconv;
 var attstr = require('./attachment_stream');
 
-var buf_siz = 65536;
+var buf_siz = config.get('mailparser.bufsize') || 65536;
 
 function Body (header, options) {
     this.header = header || new Header();
@@ -39,17 +40,6 @@ Body.prototype.parse_child = function (line) {
     if (line.substr(0, (this.boundary.length + 2)) === ('--' + this.boundary)) {
 
         var output = this.children[this.children.length -1].parse_end(line);
-
-        if (this.children[this.children.length -1].state === 'attachment') {
-            var child = this.children[this.children.length - 1];
-            if (child.buf_fill > 0) {
-                // see below for why we create a new buffer here.
-                var to_emit = new Buffer(child.buf_fill);
-                child.buf.copy(to_emit, 0, 0, child.buf_fill);
-                child.attachment_stream.emit_data(to_emit);
-            }
-            child.attachment_stream.emit_end();
-        }
 
         if (line.substr(this.boundary.length + 2, 2) === '--') {
             // end
@@ -119,7 +109,7 @@ Body.prototype.parse_start = function (line) {
             match = ct.match(/name\s*=\s*["']?([^'";]+)["']?/i);
         }
         var filename = match ? match[1] : '';
-        this.attachment_stream = attstr.createStream();
+        this.attachment_stream = attstr.createStream(this.header);
         this.emit('attachment_start', ct, filename, this, this.attachment_stream);
         this.buf_fill = 0;
         this.state = 'attachment';
@@ -160,6 +150,16 @@ Body.prototype.parse_end = function (line) {
         line = '';
     }
     
+    if (this.state === 'attachment') {
+        if (this.buf_fill > 0) {
+            // see below for why we create a new buffer here.
+            var to_emit = new Buffer(this.buf_fill);
+            this.buf.copy(to_emit, 0, 0, this.buf_fill);
+            this.attachment_stream.emit_data(to_emit);
+        }
+        this.attachment_stream.emit_end();
+    }
+
     // ignore these lines - but we could store somewhere I guess.
     if (this.body_text_encoded.length && this.bodytext.length === 0) {
         var buf = this.decode_function(this.body_text_encoded);
@@ -195,8 +195,8 @@ Body.prototype.parse_end = function (line) {
                 banner_buf = new Buffer(banner_str);
             }
 
-            // Allocate a new buffer: (6 or 1 is <p>...</p> vs \n...\n - correct that if you change those!)
-            var new_buf = new Buffer(buf.length + banner_buf.length + (this.is_html ? 7 : 1));
+            // Allocate a new buffer: (7 or 2 is <P>...</P> vs \n...\n - correct that if you change those!)
+            var new_buf = new Buffer(buf.length + banner_buf.length + (this.is_html ? 7 : 2));
 
             // Now we find where to insert it and combine it with the original buf:
             if (this.is_html) {
@@ -204,7 +204,7 @@ Body.prototype.parse_end = function (line) {
                 // copy start of buf into new_buf
                 buf.copy(new_buf, 0, 0, insert_pos);
 
-                // add in <p>
+                // add in <P>
                 new_buf[insert_pos++] = 60;
                 new_buf[insert_pos++] = 80;
                 new_buf[insert_pos++] = 62;
@@ -212,6 +212,7 @@ Body.prototype.parse_end = function (line) {
                 // copy all of banner into new_buf
                 banner_buf.copy(new_buf, insert_pos);
                 
+                // add in </P>
                 new_buf[banner_buf.length + insert_pos++] = 60;
                 new_buf[banner_buf.length + insert_pos++] = 47;
                 new_buf[banner_buf.length + insert_pos++] = 80;

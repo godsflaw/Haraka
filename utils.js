@@ -8,7 +8,7 @@ exports.uuid = function () {
     for (var i = 0; i < 36; i++) {
         if (i==8 || i==13 ||  i==18 || i==23) {
             uuid[i] = '-';
-        } 
+        }
         else if (i==14) {
             uuid[i] = '4';
         }
@@ -159,9 +159,33 @@ var versions   = process.version.split('.'),
 
 exports.existsSync = require((version > 0 || subversion >= 8) ? 'fs' : 'path').existsSync;
 
-exports.indexOfLF = function (buf) {
+exports.indexOfLF = function (buf, maxlength) {
     for (var i=0; i<buf.length; i++) {
+        if (maxlength && (i === maxlength)) break;
         if (buf[i] === 0x0a) return i;
     }
     return -1;
 }
+
+exports.prettySize = function (size) {
+    if (size === 0 || !size) return 0;
+    var i = Math.floor(Math.log(size)/Math.log(1024));
+    var units = ['B', 'kB', 'MB', 'GB', 'TB'];
+    return (size/Math.pow(1024,i)).toFixed(2) * 1 + '' + units[i];
+};
+
+exports.valid_regexes = function (list, file) {
+    // list: an array of regexes. file: the file name containing the regex list
+    var valid = [];
+    for (var i=0; i<list.length; i++) {
+        try {
+            new RegExp(list[i]);
+        }
+        catch (e) {
+            require('./logger').logerror("invalid regex in " + file + ", " + list[i]);
+            continue;
+        }
+        valid.push(list[i]);
+    }
+    return valid;  // returns a list of valid regexes
+};

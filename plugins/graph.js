@@ -1,98 +1,96 @@
 // log our denys
 
-var sqlite = require('sqlite');
-var db = new sqlite.Database();
-
-var insert;
-var select = "SELECT COUNT(*) AS hits, plugin FROM graphdata WHERE timestamp >= ? AND timestamp < ? GROUP BY plugin";
-
-db.open('graphlog.db', function (err) {
-    if (err) {
-        throw err;
-    }
-    db.execute("PRAGMA synchronous=NORMAL", // make faster, rawwwrr
-    function (err, rows) {
-        if (err) {
-            throw err;
-        }
-        db.execute("CREATE TABLE graphdata (timestamp INTEGER NOT NULL, plugin TEXT NOT NULL)",
-        function (err, rows) {
-            if (!err) {
-                db.execute("CREATE INDEX graphdata_idx ON graphdata (timestamp)", function(){});
-            }
-            db.prepare("INSERT INTO graphdata VALUES (?,?)",
-            function (err, stmt) {
-                if (err) {
-                    throw err;
-                }
-                insert = stmt;
-            });
-        });
-    });
-});
-
-var plugins = {};
-
 var http  = require('http');
 var urlp  = require('url');
 var utils = require('./utils');
+
+var db;
+var select = "SELECT COUNT(*) AS hits, plugin FROM graphdata WHERE timestamp >= ? AND timestamp < ? GROUP BY plugin";
+var insert;
+var plugins = {};
+var config;
+
 var width = 800;
+
+function createTable() {
+    db.exec( "CREATE TABLE IF NOT EXISTS graphdata (timestamp INTEGER NOT NULL, plugin TEXT NOT NULL)")
+      .exec( "CREATE INDEX IF NOT EXISTS graphdata_idx ON graphdata (timestamp)");
+}
 
 exports.register = function () {
     var plugin = this;
-    var ignore_re = this.config.get('grapher.ignore_re') || 'queue|graph|relay';
+    config  = plugin.config.get('graph.ini');
+    var ignore_re = config.main.ignore_re || plugin.config.get('grapher.ignore_re') || 'queue|graph|relay';
     ignore_re = new RegExp(ignore_re);
     
     plugins = {accepted: 0, disconnect_early: 0};
     
-    this.config.get('plugins', 'list').forEach(
+    plugin.config.get('plugins', 'list').forEach(
         function (p) {
             if (!p.match(ignore_re)) {
                 plugins[p] = 0;
             }
         }
     );
+
+    try {
+        var sqlite3 = require('sqlite3').verbose();
+    }
+    catch (e) {
+        plugin.logerror("unable to load sqlite3, try\n\n\t'npm install -g sqlite3'\n\n");
+        return;
+    }
+
+    var db_name = config.main.db_file || 'graphlog.db';
+    db = new sqlite3.Database(db_name, createTable);
+    insert = db.prepare( "INSERT INTO graphdata VALUES (?,?)" );
+
+    plugin.register_hook('init_master',   'http_init');
+    plugin.register_hook('disconnect',    'disconnect');
+    plugin.register_hook('deny',          'deny');
+    plugin.register_hook('queue_ok',      'queue_ok');
 };
 
-exports.hook_init_master = function (next) {
+exports.http_init = function (next) {
     var plugin = this;
-    var port = this.config.get('grapher.http_port') || 8080;
+    var port   = config.main.http_port || this.config.get('grapher.http_port') || 8080;
+    var addr   = config.main.http_addr || '127.0.0.1';
     var server = http.createServer(
         function (req, res) {
             plugin.handle_http_request(req, res);
         });
-    
+
     server.on('error', function (err) {
         plugin.logerror("http server failed to start. Maybe running elsewhere?" + err);
         next(DENY);
     });
-    
-    server.listen(port, "127.0.0.1", function () {
-        plugin.loginfo("http server running on port " + port);
+
+    server.listen(port, addr, function () {
+        plugin.loginfo("http server running on " + addr + ':' + port);
         next();
     });
-}
+};
 
-exports.hook_disconnect = function (next, connection) {
+exports.disconnect = function (next, connection) {
     if (!connection.current_line) {
         // disconnect without saying anything
         return this.hook_deny(next, connection, [DENY, "random disconnect", "disconnect_early"]);
     }
     next();
-}
+};
 
-exports.hook_deny = function (next, connection, params) {
+exports.deny = function (next, connection, params) {
     var plugin = this;
-    insert.bindArray([new Date().getTime(), params[2]], function (err) {
+    insert.bind([new Date().getTime(), params[2]], function (err) {
         if (err) {
             plugin.logerror("Insert DENY failed: " + err);
             return next();
         }
-        insert.fetchAll(function (err, rows) {
+        insert.run(function (err, rows) {
             if (err) {
                 plugin.logerror("Insert failed: " + err);
             }
-            try { insert.reset() } catch (err) {}
+            try { insert.reset(); } catch (e) {}
             next();
         });
     });
@@ -100,12 +98,12 @@ exports.hook_deny = function (next, connection, params) {
 
 exports.hook_queue_ok = function (next, connection, params) {
     var plugin = this;
-    insert.bindArray([new Date().getTime(), 'accepted'], function (err) {
+    insert.bind([new Date().getTime(), 'accepted'], function (err) {
         if (err) {
             plugin.logerror("Insert DENY failed: " + err);
             return next();
         }
-        insert.fetchAll(function (err, rows) {
+        insert.run(function (err, rows) {
             if (err) {
                 plugin.logerror("Insert failed: " + err);
             }
@@ -117,7 +115,7 @@ exports.hook_queue_ok = function (next, connection, params) {
 
 exports.handle_http_request = function (req, res) {
     var parsed = urlp.parse(req.url, true);
-    this.loginfo("Handling URL: " + parsed.href);
+    // this.loginfo("Handling URL: " + parsed.href);
     switch (parsed.pathname) {
         case '/':
             this.handle_root(res, parsed);
@@ -229,12 +227,16 @@ exports.get_data = function (res, earliest, today, group_by) {
         res.write(data + "\n");
     }
     
-    db.query(select, [earliest, next_stop], function (err, row) {
+    db.each(select, [earliest, next_stop], function (err, row) {
         if (err) {
             res.end();
             return plugin.logerror("SELECT failed: " + err);
         }
-        if (!row) {
+        plugin.loginfo("got: " + row.hits + ", " + row.plugin + " next_stop: " + next_stop);
+
+        aggregate[row.plugin] = row.hits;
+    },
+    function (err, rows ) {
             write_to(utils.ISODate(new Date(next_stop)) + ',' + 
                 utils.sort_keys(plugins).map(function(i){ return 1000 * 60 * (aggregate[i]/group_by) }).join(',')
             );
@@ -247,10 +249,7 @@ exports.get_data = function (res, earliest, today, group_by) {
                 });
             }
         }
-        // plugin.loginfo("got: " + row.hits + ", " + row.plugin + " next_stop: " + next_stop);
-        
-        aggregate[row.plugin] = row.hits;
-    });
+    );
 };
 
 var reset_agg = function () {
