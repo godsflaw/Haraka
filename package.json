@@ -48,6 +48,7 @@
   },
   "devDependencies": {
     "nodeunit"              : "https://github.com/godsflaw/nodeunit/archive/master.tar.gz",
+    "opendkim"              : "git+ssh://git@github.com/godsflaw/node-opendkim.git",
     "haraka-test-fixtures"  : "*",
     "eslint"                : ">=2.0.0",
     "grunt"                 : "*",
